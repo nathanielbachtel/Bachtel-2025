@@ -1,4 +1,4 @@
-# Intestinal Mast Cell scRNAseq
+# Intestinal Mast Cell Bulk and scRNAseq
 This repository contains analysis scripts for the manuscript "Intestinal mast cell-derived leukotrienes mediate anaphylactic response to ingested antigens" by Bachtel et al, 2025.
 
 This study is led by the Medzhitov lab at Yale University School of Medicine (Department of Immunobiology).
