@@ -1,0 +1,125 @@
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+plt.rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
+plt.rc('text', usetex=False)
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
+
+#All genes (extended)
+
+Med = [
+'Pla2g4a',
+'Alox5',
+'Alox5ap',
+'Lta4h',
+'Ltc4s',
+'Ptgs1',
+'Ptgs2',
+'Hpdgs',
+'Slc7a5',
+'Tph1',
+'Ddc',
+'Hdc',
+'Il4',
+'Il6',
+'Il9',
+'Il13',
+'Il33',
+'Csf1',
+'Tnfa',
+'Tgfb1'
+]
+Rep = [
+'Fcer1a',
+'Fcer1g',
+'Ahr',
+'Kit',
+'Il1rl1',
+'Il3r',
+'Il4r',
+'Il9r',
+'Tgfbr'
+]
+Prot = [
+'Cma1',
+'Mcpt4',
+'Cpa3',
+'Mcpt8',
+'Mrgprb2',
+'Maob',
+'Mcpt2',
+'Mcpt1',
+'Itgb7',
+'Itga4',
+'Itgae'
+]
+
+#Final Mediators
+
+Med = [
+'Pla2g4a',
+'Alox5',
+'Alox5ap',    
+'Ltc4s',
+'Ptgs2',
+'Hpdgs',
+'Tph1', 
+'Hdc'
+]
+Prot = [  
+'Cma1',
+'Cpa3',
+'Mrgprb2',
+'Mcpt2',
+'Mcpt1',
+'Itgb7',
+'Itga4',
+'Itgae'
+]
+
+tpm_tbl = pd.read_table('gene_tpms_all_samples.tsv', index_col=0) # gene_tpms_all_samples.tsv was an aggregated file from samples/abundance.tsv
+
+all_tbl = tpm_tbl[['Mast2', 'Mast6', 'Mast8', 'Mast11', 'Mast18', 'Mast22', 'Mast26', 'Mast28', 'Mast31', 'Mast38',
+                   'Mast1', 'Mast5', 'Mast7', 'Mast9', 'Mast13', 'Mast17', 'Mast21', 'Mast25', 'Mast27', 'Mast29', 'Mast33', 'Mast37']] #Mast1, Mast2, Mast5, Mast6, Mast7, Mast8, Mast9, Mast11, Mast13, Mast17, Mast18 were IEL samples and Mast21, Mast22, Mast25, Mast26, Mast27, Mast28, Mast29, Mast31, Mast33, Mast37, Mast38 were LP samples.
+
+mouse_genes_tbl = pd.read_table('../kallisto/gene_mouse_101.txt', index_col=0)
+
+all_tbl = pd.merge(all_tbl, mouse_genes_tbl, how='left', left_index=True, right_index=True)
+
+all_tbl.rename(columns={'Mast2': 'IEL', 'Mast6': 'IEL', 'Mast8': 'IEL', 'Mast11': 'IEL', 'Mast18': 'IEL',
+                       'Mast22': 'LP', 'Mast26': 'LP', 'Mast28': 'LP', 'Mast31': 'LP', 'Mast38': 'LP',
+                       'Mast1': 'IEL', 'Mast5': 'IEL', 'Mast7': 'IEL', 'Mast9': 'IEL', 'Mast13': 'IEL', 'Mast17': 'IEL',
+                       'Mast21': 'LP', 'Mast25': 'LP', 'Mast27': 'LP', 'Mast29': 'LP', 'Mast33': 'LP', 'Mast37': 'LP'}, inplace=True)
+
+
+all_tbl['med'] = [name in Med for name in all_tbl['Gene name']]
+med = all_tbl[all_tbl['med']]
+all_tbl['rep'] = [name in Rep for name in all_tbl['Gene name']]
+rep = all_tbl[all_tbl['rep']]
+all_tbl['prot'] = [name in Prot for name in all_tbl['Gene name']]
+prot = all_tbl[all_tbl['prot']]
+
+
+
+from scipy.stats import zscore
+
+def plot_zscore_with_clustering(df):
+    # Your existing z-score normalization logic
+    df_zscores = df.sub(df.mean(axis=1), axis=0).div(df.std(axis=1, ddof=1), axis=0)
+    
+    # Plotting the heatmap with clustering
+    g = sns.clustermap(df_zscores, z_score=0, cmap='RdBu_r', figsize=(12, 4.5), cbar_kws={'label': 'Z-score'}, vmin=-3, vmax=3) #, fmt=".2f", annot=True
+    plt.setp(g.ax_heatmap.get_xticklabels(), rotation=45, ha='right') # Adjust x-tick label properties
+    plt.setp(g.ax_heatmap.get_yticklabels(), rotation=0) # Adjust y-tick label properties if needed
+    plt.title('Z-Score Heatmap Across IEL and LP Measurements', pad=10) # pad adjusts the title position
+
+    plt.show()
+
+
+
+plot_zscore_with_clustering(med.set_index('Gene name').iloc[:, :22]) 
+plot_zscore_with_clustering(rep.set_index('Gene name').iloc[:, :22]) 
+plot_zscore_with_clustering(prot.set_index('Gene name').iloc[:, :22]) 
