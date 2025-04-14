@@ -1,0 +1,512 @@
+---
+title: "MC_scRNAseq"
+output: html_document
+date: "2024-06-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Load the packages
+```{r}
+# Basic
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(tidyverse)
+library(openxlsx)
+library(patchwork)
+library(devtools)
+
+# Single cell
+library(Seurat)
+#devtools::install_github('satijalab/seurat-data')
+library(SeuratData)
+#remotes::install_github("mojaveazure/seurat-disk")
+library(SeuratDisk)
+#install.packages("R.utils")
+#remotes::install_github("satijalab/seurat-wrappers", "seurat5", quiet = TRUE)
+library(SeuratWrappers) 
+#library(reticulate)
+library(biomaRt)
+#devtools::install_github("stephenturner/annotables")
+library(annotables)
+#BiocManager::install("org.Mm.eg.db")
+library(org.Mm.eg.db)
+library(ensembldb)
+library(EnsDb.Mmusculus.v79)
+library(DESeq2)
+```
+
+# Data from Tauber M., et al. J Exp Med (2023) 
+Reference: M. Tauber et al., Landscape of mast cell populations across organs in mice and humans. J Exp Med 220,  (2023). 
+```{r}
+# Input the Mice_Mast_cells.Rds file
+Mice_mast_cell = readRDS("data/Mice_Mast_cells.Rds")
+#Mice_mast_cell$orig.ident
+DefaultAssay(Mice_mast_cell) = "RNA"
+
+DimPlot(Mice_mast_cell, reduction = "umap", group.by = "orig.ident")
+```
+
+# Dot plot of key mast cell marker and effector genes across tissues
+## Please refer to Main Fig 3a
+```{r}
+genes_to_plot = c("Hdc","Mrgprb2","Mcpt1","Mcpt8","Alox5","Alox5ap","Itgae","Cma1")
+
+DotPlot(object = Mice_mast_cell, intersect(rownames(Mice_mast_cell), genes_to_plot), group.by = "orig.ident") + scale_colour_gradient2(low = "#FF00FF", mid = "#000000", high = "#FFFF00") + theme(axis.text.x = element_text(angle = 45, hjust=1, size=8))
+```
+
+
+# Analysis for IEL and LP mast cells
+# Read files 
+```{r}
+# The raw barcodes, features, and matrix files for IEL and LP samples can be downloaded from GSE293906
+# Please change the data.dir and file names to the directory where you saved the files locoally or remotely. 
+for (file in c("IEL_MC_1_raw", "IEL_MC_2_raw", "LP_MC_1_raw", "LP_MC_2_raw")){
+        seurat_data = Read10X(data.dir = paste0("data/MC_scRNAseq/", file))
+        seurat_obj = CreateSeuratObject(counts = seurat_data,
+                                         min.cells = 5,
+                                         min.features = 100, 
+                                         project = file)
+        assign(file, seurat_obj)
+}
+```
+
+# Merge the datasets to run QC to compare the data quality for all the samples 
+```{r}
+# Create a merged Seurat object
+merged_MC <- merge(x = IEL_MC_2_raw, 
+                       y = c(LP_MC_1_raw, IEL_MC_1_raw, LP_MC_2_raw), 
+                       add.cell.id = c("IEL_MC_2", "LP_MC_1", "IEL_MC_1", "LP_MC_2"))
+```
+
+
+# Quality control
+## Add metadata columns 
+```{r}
+# Create metadata dataframe
+metadata <- merged_MC@meta.data
+# Add cell IDs to metadata
+metadata$cells <- rownames(metadata)
+
+# Number of genes/UMI - complexity of the dataset
+metadata$log10GenesPerUMI <- log10(merged_MC$nFeature_RNA) / log10(merged_MC$nCount_RNA)
+
+# Create sample column
+metadata$sample <- NA
+metadata$sample[which(str_detect(metadata$cells, "^IEL_"))] <- "IEL"
+metadata$sample[which(str_detect(metadata$cells, "^LP_"))] <- "LP"
+
+# Rename columns
+metadata <- metadata %>%
+        dplyr::rename(seq_folder = orig.ident,
+                      nUMI = nCount_RNA,
+                      nGene = nFeature_RNA)
+
+# Add metadata back to Seurat object
+merged_MC@meta.data <- metadata
+head(metadata)
+```
+
+## Assessing the quality metrics
+```{r}
+# cell counts
+# Visualize the number of cell counts per sample
+metadata %>% 
+  	ggplot(aes(x=seq_folder, fill=seq_folder)) + 
+  	geom_bar() +
+  	theme_classic() +
+  	theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  	theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  	ggtitle("NCells")
+```
+
+
+```{r}
+# UMI counts (transcripts) per cell - should generally be above 500
+# 500-1000 counts - usable but probably should be sequenced more deeply 
+metadata %>% 
+  	ggplot(aes(color=seq_folder, x=nUMI, fill= seq_folder)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	theme_classic() +
+  	ylab("Cell density") +
+  	geom_vline(xintercept = 500)
+```
+
+```{r}
+# Genes detected per cell
+metadata %>% 
+  	ggplot(aes(color=seq_folder, x=nGene, fill= seq_folder)) + 
+  	geom_density(alpha = 0.2) + 
+  	theme_classic() +
+    scale_x_log10() + 
+    ylab("Cell density") +
+  	geom_vline(xintercept = 500)
+range(metadata$nGene)
+```
+
+
+```{r}
+# Overall complexity of the gene expression - genes detected per UMI
+# above 0.80 for good quality cells.
+metadata %>%
+  	ggplot(aes(x=log10GenesPerUMI, color = seq_folder, fill=seq_folder)) +
+  	geom_density(alpha = 0.2) +
+  	theme_classic() +
+    ylab("Cell density") +
+  	geom_vline(xintercept = 0.8)
+```
+
+```{r}
+# Correlation between genes and UMIs
+metadata %>% 
+  	ggplot(aes(x=nUMI, y=nGene, color = seq_folder)) + 
+  	geom_point() + 
+  	stat_smooth(method=lm) +
+  	scale_x_log10() + 
+  	scale_y_log10() + 
+  	theme_classic() +
+  	geom_vline(xintercept = 500) +
+  	geom_hline(yintercept = 500) +
+  	facet_wrap(~sample)
+```
+
+## Filter the dataset
+```{r}
+filtered_MC <- subset(x = merged_MC, 
+                      subset= (nUMI >= 500) & (nGene >= 500) & (log10GenesPerUMI > 0.80))
+filtered_MC
+```
+
+# Data processing
+# viualize the results without integration
+```{r}
+filtered_MC <- NormalizeData(filtered_MC)
+filtered_MC <- FindVariableFeatures(filtered_MC)
+filtered_MC <- ScaleData(filtered_MC)
+filtered_MC <- RunPCA(filtered_MC)
+
+filtered_MC <- FindNeighbors(filtered_MC, dims = 1:30, reduction = "pca")
+filtered_MC <- FindClusters(filtered_MC, resolution = 0.6, cluster.name = "unintegrated_clusters")
+```
+
+```{r}
+filtered_MC <- RunUMAP(filtered_MC, dims = 1:30, reduction = "pca", reduction.name = "umap.unintegrated")
+# visualize by batch
+DimPlot(filtered_MC, reduction = "umap.unintegrated", group.by = c("seq_folder"))
+```
+
+
+# Integrative analysis in Seurat v5
+```{r}
+#install.packages("harmony")
+library(harmony)
+filtered_MC <- IntegrateLayers(
+  object = filtered_MC, method = HarmonyIntegration,
+  orig.reduction = "pca", new.reduction = "harmony",
+  verbose = FALSE
+)
+```
+
+# Recluster and visualize the integrated datasets
+## Please refer to Fig S3f
+```{r}
+# Dimensions reduction algorithms like UMAP is stochastic, clustering and figure may be different everytime running the code.
+# Could run set.seed
+set.seed(42)
+
+filtered_MC <- FindNeighbors(filtered_MC, reduction = "harmony", dims = 1:30)
+filtered_MC <- FindClusters(filtered_MC, resolution = 0.6, cluster.name = "harmony_clusters")
+filtered_MC <- RunUMAP(filtered_MC, reduction = "harmony", dims = 1:30, reduction.name = "UMAP")
+p2 = DimPlot(
+  filtered_MC,
+  reduction = "UMAP",
+  group.by = c("seq_folder", "harmony_clusters"),
+  label = TRUE,
+  combine = FALSE, label.size = 2
+)
+p2
+
+```
+
+# Rejoin the layers
+```{r}
+filtered_MC <- JoinLayers(filtered_MC)
+filtered_MC
+```
+
+# Marker Identification
+## Please refer to Table S2
+```{r}
+# find markers for every cluster compared to all remaining cells
+MC.markers <- FindAllMarkers(filtered_MC) # only.pos = FALSE to report only positive ones
+MC.markers.top = MC.markers %>%
+  group_by(cluster) %>%
+  dplyr::filter(abs(avg_log2FC) > 1 & p_val_adj < 0.05 & (pct.1>0.1 | pct.2>0.1)) %>%
+  arrange(-avg_log2FC, .by_group = TRUE)
+```
+
+
+# Remove the potental contaminated cells
+```{r}
+# Remove the non-mast cells by subclustering the data
+filtered_MC_sub = subset(x = filtered_MC, idents = c("0","1","2","3","4","5","6","7","10"))
+table(filtered_MC_sub$seurat_clusters)
+```
+
+# Reclustering the cells
+## Please refer to Main Fig 2e, supplementory Fig. S3g, and Fig. S3h
+```{r}
+filtered_MC_sub <- FindNeighbors(filtered_MC_sub, reduction = "harmony", dims = 1:30)
+filtered_MC_sub <- FindClusters(filtered_MC_sub, resolution = 0.6, cluster.name = "harmony_clusters")
+filtered_MC_sub <- RunUMAP(filtered_MC_sub, reduction = "harmony", dims = 1:30, reduction.name = "UMAP")
+
+DimPlot(
+  filtered_MC_sub,
+  reduction = "UMAP",
+  group.by = c("seq_folder", "harmony_clusters"),
+  label = TRUE,
+  combine = FALSE, label.size = 2
+)
+```
+
+# Marker Identification
+## Please refer to Table S3
+```{r}
+# find markers for every cluster compared to all remaining cells
+MC.markers.sub <- FindAllMarkers(filtered_MC_sub)
+MC.markers.sub.top = MC.markers.sub %>%
+  group_by(cluster) %>%
+  dplyr::filter(abs(avg_log2FC) > 1 & p_val_adj < 0.05 & (pct.1>0.1 | pct.2>0.1)) %>%
+  arrange(-avg_log2FC, .by_group = TRUE)
+```
+
+
+# Plot top 10 marker genes for each cluster
+## Please refer to Main Fig 2g
+```{r}
+top10 = MC.markers.sub.top %>%
+    group_by(cluster) %>%
+    arrange(-avg_log2FC, .by_group = TRUE) %>%
+    slice_head(n = 10) %>%
+    ungroup() 
+
+# Cluster 6 & 7 have duplicated top 10 genes (e.g., Tpsab1 and Tpsb2). For plotting purpose, we are only drawing these duplicated gene once.
+top10 = top10[!duplicated(top10$gene),]
+
+all.genes <- rownames(filtered_MC_sub)
+filtered_MC_sub <- ScaleData(filtered_MC_sub, features = all.genes)
+DoHeatmap(filtered_MC_sub, features = top10$gene) + NoLegend()
+```
+
+# Check the expressions of sepcific genes
+## Please refer to Main Fig 3c, supplementory Fig S3i-m
+```{r}
+VlnPlot(
+  filtered_MC_sub, "Fcer1a",
+  group.by = "harmony_clusters"
+) + NoLegend() + ggtitle("Harmony Clusters")
+
+FeaturePlot(filtered_MC_sub, features = c("Fcer1a"), reduction = "UMAP", min.cutoff = "q9")
+```
+
+
+# DEseq analysis between cluster 0,1 vs 2 with DESeq2
+## Please refer to Table S4
+```{r}
+DEseq.marker.cluster01vs2 <- FindMarkers(object = filtered_MC_sub,
+                         ident.1 = c("0","1"),
+                         ident.2 = "2",
+                         test.use = "DESeq2")
+head(DEseq.marker.cluster01vs2)
+
+# Filter the DEGs with abs(avg_log2FC) > 1 & p_val_adj < 0.05 & (pct.1>0.1 | pct.2>0.1)
+# Our cutoffs were more stringent, different cutoffs may be set.
+DEseq.marker.cluster01vs2.top = DEseq.marker.cluster01vs2 %>%
+  dplyr::filter(abs(avg_log2FC) > 1 & p_val_adj < 0.05 & (pct.1>0.1 | pct.2>0.1)) %>%
+  arrange(-avg_log2FC)
+```
+
+# Plot the average expression of the top DEGs between IEL mast cells (clusters 0,1) and LP mast cells 
+## Please refer to Main Fig 2h
+```{r}
+cluster_averages = AverageExpression(filtered_MC_sub, group.by = "harmony_clusters")
+cluster_averages = as.data.frame(cluster_averages$RNA)[c("g0","g1","g2")]
+
+DEseq.marker.cluster01vs2.top20 = rbind(head(DEseq.marker.cluster01vs2.top, 20), tail(DEseq.marker.cluster01vs2.top, 20))
+cluster_averages_select = cluster_averages[rownames(cluster_averages) %in% rownames(DEseq.marker.cluster01vs2.top20),]
+
+# scales the matrix to standardize the expression and for easier comparison/visulization
+cluster_averages_select.z = t(apply(cluster_averages_select, 1, scale))
+colnames(cluster_averages_select.z) = c("cluster0", "cluster1", "cluster2")
+
+library(pheatmap)
+pheatmap(cluster_averages_select.z,cluster_cols=F)
+```
+
+# Volcano plot of DEGs between clusters 0,1 vs 2
+## Please refer to Fig S3n
+```{r}
+#BiocManager::install("EnhancedVolcano")
+library(EnhancedVolcano)
+EnhancedVolcano(DEseq.marker.cluster01vs2,
+    lab = rownames(DEseq.marker.cluster01vs2),
+    x = 'avg_log2FC',
+    y = 'p_val_adj',
+    xlab = bquote(~Log[2]~ 'fold change'),
+    pCutoff = 10e-32,
+    FCcutoff = 1.0,
+    pointSize = 3.0,
+    labSize = 3.0,
+    colAlpha = 1,
+    legendPosition = 'right',
+    legendLabSize = 12,
+    legendIconSize = 4.0,
+    drawConnectors = TRUE,
+    widthConnectors = 0.75)
+```
+
+# Plot the regulators with top 10 absolute(Activation_zscore) from IPA analysis 
+DEGs were imported into the IPA software (QIAGEN). The result generated by IPA (Table S6) was further analized and plotted. The regulators with top 10 absolute(Activation_zscore) were selected base on the following criteria: a). There were predicted Activation_zscores; b). The absolute values of predicted Activation_zscores were > 2; c). The molecule types such as chemical drugs, chemical kinase inhibitors, chemical others (not the primary interest of this study) were removed. 
+## Please refer to Table S6 sheet #2 (or Fig S3p) and Main Fig 2i
+```{r}
+# Import the data table from Table S6 sheet #2 or table in Fig S3p
+IPA_regulators = openxlsx::read.xlsx("result/IPA_upstream_analysis_01vs2.xlsx", 2, rowNames = TRUE)
+
+IPA_regulators = IPA_regulators[1:20,] # To remove the text note writen in the table 
+IPA_regulators$Upstream_regulators = rownames(IPA_regulators)
+
+# Order genes based on Z_Score
+IPA_regulators$Upstream_regulators <- reorder(IPA_regulators$Upstream_regulators, dplyr::desc(IPA_regulators$Activation_zscore))
+
+# Create the dot plot
+dot_plot <- ggplot(IPA_regulators, aes(x = Upstream_regulators, y = Activation_zscore, color = pvalue_of_overlap)) +
+  geom_point(size = 4) + 
+  scale_color_gradient(low = "blue", high = "red", name = "P Value") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(), 
+    axis.line.y = element_line(color = "black", size = 0.5),
+    axis.line.x = element_line(color = "black", size = 0.5),
+    axis.ticks.length = unit(0.1, "cm"), 
+    axis.ticks = element_line(color = "black"), 
+    axis.ticks.x = element_line(lineend = "square"), 
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 12)
+  ) +
+  labs(
+    x = "Upstream regulator",
+    y = "Activation Z-Score",
+    title = "Dot Plot of Activation Z-Scores and P-Values"
+  )
+print(dot_plot)
+```
+
+
+# GOE (Gene Ontology Enrichment) analysis
+```{r}
+# Prepare the input dataset from DEseq.marker.cluster01vs2
+DEseq.marker.cluster01vs2$Symbol = rownames(DEseq.marker.cluster01vs2)
+DEseq.marker.cluster01vs2.GSEA = DEseq.marker.cluster01vs2[c("Symbol","avg_log2FC","p_val_adj")]
+DEseq.marker.cluster01vs2.GSEA = DEseq.marker.cluster01vs2.GSEA %>% arrange(desc(avg_log2FC))
+head(DEseq.marker.cluster01vs2.GSEA)
+```
+
+# GSEA using ClusterProfiler
+```{r}
+# BiocManager::install("clusterProfiler")
+# BiocManager::install("enrichplot")
+library(clusterProfiler)
+library(enrichplot)
+```
+
+```{r}
+# Set the desired organism as mouse
+organism = "org.Mm.eg.db"
+#BiocManager::install(organism, character.only = TRUE)
+library(organism, character.only = TRUE)
+```
+
+```{r}
+library(msigdbr)
+msigdb_hallmark_df <- msigdbr(species = "Mus musculus", category = "H") 
+#head(msigdb_hallmark_df)
+```
+
+# GO term enrichment for DEGs between IEL and LP mast cells
+## Please refer to Fig S3o and Table S5
+```{r}
+# Identify the GO term enrichment for DEGs between IEL and LP mast cells
+cluster01vs2_hallmark <- enricher(pvalueCutoff= 0.5, qvalueCutoff=1, DEseq.marker.cluster01vs2.GSEA[which(abs(DEseq.marker.cluster01vs2.GSEA$avg_log2FC) >= 1 & DEseq.marker.cluster01vs2.GSEA$p_val_adj < 0.05),1], pAdjustMethod = "BH", TERM2GENE = msigdb_hallmark_df[,c("gs_name","gene_symbol")])
+dotplot(cluster01vs2_hallmark, showCategory = 25) + theme(axis.text.y = element_text(angle = 0, hjust=1, size=8))
+
+# Table S5 - Table of GO analysis
+cluster01vs2_hallmark_result = cluster01vs2_hallmark@result
+```
+
+# Trajectory analsis with Monocle3
+```{r}
+# Install additional packages for trajectory analysis
+# BiocManager::install(c('BiocGenerics', 'DelayedArray', 'DelayedMatrixStats',
+#                        'limma', 'lme4', 'S4Vectors', 'SingleCellExperiment',
+#                        'SummarizedExperiment', 'batchelor', 'HDF5Array',
+#                        'terra', 'ggrastr'))
+#devtools::install_github('cole-trapnell-lab/monocle3')
+#devtools::install_github('satijalab/seurat-wrappers')
+```
+
+```{r}
+library(monocle3)
+set.seed(42)
+```
+
+
+```{r}
+filtered_MC_sub_Mon3 = SeuratWrappers::as.cell_data_set(filtered_MC_sub)
+filtered_MC_sub_Mon3 = cluster_cells(filtered_MC_sub_Mon3)
+filtered_MC_sub_Mon3
+```
+
+```{r}
+plot_cells(filtered_MC_sub_Mon3, show_trajectory_graph = FALSE)
+plot_cells(filtered_MC_sub_Mon3, show_trajectory_graph = FALSE, color_cells_by = "seq_folder")
+```
+
+```{r}
+filtered_MC_sub_Mon3 = learn_graph(filtered_MC_sub_Mon3, use_partition = FALSE)
+```
+
+
+```{r}
+# function of trying to identify the root principal points programmatically instead of picking it manually
+get_earliest_principal_node <- function(filtered_MC_sub_Mon3, time_bin="8"){
+  cell_ids = which(colData(filtered_MC_sub_Mon3)[, "ident"] == time_bin)
+  closest_vertex =
+  filtered_MC_sub_Mon3@principal_graph_aux[["UMAP"]]$pr_graph_cell_proj_closest_vertex
+  closest_vertex = as.matrix(closest_vertex[colnames(filtered_MC_sub_Mon3), ])
+  root_pr_nodes =
+  igraph::V(principal_graph(filtered_MC_sub_Mon3)[["UMAP"]])$name[as.numeric(names
+  (which.max(table(closest_vertex[cell_ids,]))))]
+  root_pr_nodes
+}
+
+filtered_MC_sub_Mon3 = order_cells(filtered_MC_sub_Mon3, root_pr_nodes=get_earliest_principal_node(filtered_MC_sub_Mon3))
+```
+
+# Plot pseudotime
+## Please refer to Main Fig 2f
+```{r}
+plot_cells(filtered_MC_sub_Mon3, color_cells_by = "pseudotime", label_leaves = FALSE, label_branch_points = FALSE)
+```
+
+Additional References: 
+Trapnell C. et. al. The dynamics and regulators of cell fate decisions are revealed by pseudotemporal ordering of single cells. Nat. Biotechnol. 32, 381–386 (2014). https://doi.org/10.1038/nbt.2859
+Qiu, X. et. al. Reversed graph embedding resolves complex single-cell trajectories. Nat. Methods 14, 979–982 (2017). https://doi.org/10.1038/nmeth.4402
+Cao, J. et. al. The single-cell transcriptional landscape of mammalian organogenesis. Nature 566, 496–502 (2019). https://doi.org/10.1038/s41586-019-0969-x
+McInnes, L., Healy, J. & Melville, J. UMAP: Uniform Manifold Approximation and Projection for dimension reduction. Preprint at https://arxiv.org/abs/1802.03426 (2018).
+
