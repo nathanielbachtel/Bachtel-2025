@@ -1,0 +1,37 @@
+import pandas as pd
+import numpy as np
+from matplotlib import pyplot as plt
+
+plt.rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
+plt.rc('text', usetex=False)
+plt.rcParams['pdf.fonttype'] = 42
+plt.rcParams['ps.fonttype'] = 42
+
+deseq2_tbl = pd.read_csv('DESeq2_IELMinusLP_all.csv', index_col=0)
+mouse_genes_tbl = pd.read_table('../kallisto/gene_mouse_101.txt', index_col=0)
+
+deseq2_tbl
+
+MINIMUM = 10
+
+valid = deseq2_tbl['baseMean'] > MINIMUM
+tbl = deseq2_tbl[valid]
+
+tbl = pd.merge(tbl, mouse_genes_tbl, how='left', left_index=True, right_index=True)
+
+fig = plt.figure(figsize = (4, 4))
+
+plt.scatter(tbl['log2FoldChange'], np.log10(tbl['padj']), s=5, alpha=0.2, c='black', rasterized=True)
+
+#plt.gca().set_aspect(1)
+plt.grid()
+plt.gca().invert_yaxis()
+
+plt.xlim(-30,30)
+
+plt.annotate('n = ' + str(len(tbl)), (15.1, -5))
+
+plt.xlabel('Log2 fold change (IEL/LP)')
+plt.ylabel('-Log10 q-value')
+
+plt.show()

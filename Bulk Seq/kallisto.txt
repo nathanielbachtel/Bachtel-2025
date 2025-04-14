@@ -1,0 +1,3 @@
+module load kallisto
+
+while read p; do kallisto quant -i ~/project/kallisto/index/GRCm38.101_25 -t 18 -b 60 -o "$p" ./sequences/"$p"_*.fastq.gz; done < sample_List.txt
